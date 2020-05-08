@@ -68,18 +68,19 @@ def main():
         os.makedirs(args.save_dir)
 
     model = torch.nn.DataParallel(resnet.__dict__[args.arch]())
-    model.cuda()
+    #model.cuda()
 
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
+            checkpoint = torch.load(args.resume, map_location=torch.device("cpu"))
+            if checkpoint.get('epoch') is not None:
+                args.start_epoch = checkpoint['epoch']
             best_prec1 = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
             print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.evaluate, checkpoint['epoch']))
+                  .format(args.evaluate, args.start_epoch))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
@@ -107,7 +108,8 @@ def main():
         num_workers=args.workers, pin_memory=True)
 
     # define loss function (criterion) and pptimizer
-    criterion = nn.CrossEntropyLoss().cuda()
+    #criterion = nn.CrossEntropyLoss().cuda()
+    criterion = nn.CrossEntropyLoss()
 
     if args.half:
         model.half()
@@ -176,14 +178,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        target = target.cuda()
-        input_var = input.cuda()
+        #target = target.cuda()
+        #input_var = input.cuda()
+        input_var = input
         target_var = target
         if args.half:
             input_var = input_var.half()
 
         # compute output
-        output = model(input_var)
+        _, output = model(input_var)
         loss = criterion(output, target_var)
 
         # compute gradient and do SGD step
@@ -226,15 +229,17 @@ def validate(val_loader, model, criterion):
     end = time.time()
     with torch.no_grad():
         for i, (input, target) in enumerate(val_loader):
-            target = target.cuda()
-            input_var = input.cuda()
-            target_var = target.cuda()
+            #target = target.cuda()
+            #input_var = input.cuda()
+            #target_var = target.cuda()
+            input_var = input
+            target_var = target
 
             if args.half:
                 input_var = input_var.half()
 
             # compute output
-            output = model(input_var)
+            _, output = model(input_var)
             loss = criterion(output, target_var)
 
             output = output.float()
