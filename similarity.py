@@ -1,94 +1,83 @@
-# This file is modified from https://pytorch.org/tutorials/beginner/fgsm_tutorial.html .
-# Thanks for their work!
-
-from __future__ import print_function
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import datasets, transforms
 import numpy as np
+from scipy import linalg
 import matplotlib.pyplot as plt
 
-epsilons = [0, .05, .1, .15, .2, .25, .3]
-pretrained_model = "save_resnet20/model.th"
-pretrained_model2 = "pretrained_models/resnet20-12fca82f.th"
-use_cuda = True
-plot_examples = 3
+data_filename = "/tmp/model_tests.10000.pt"
 
-# LeNet Model definition
-import resnet as resnet
-Net = resnet.resnet20
+# https://arxiv.org/abs/1810.11750
+# Maximum Matching Similarity
+def calc_similarity1(x, y, epsilon):
+    x = x.numpy()
+    y = y.numpy()
+    nr_cols = (x.shape[1] + y.shape[1])
 
-# MNIST Test dataset and dataloader declaration
-test_loader = torch.utils.data.DataLoader(
-    datasets.CIFAR10(root='./data', train=False, download=True, transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])),
-        batch_size=1, shuffle=True)
+    while True:
+        y_basis = linalg.orth(y)
+        x_cols = []
+        for i in range(x.shape[1]):
+            vec = x[:, i:i+1]
+            norm = np.sqrt((vec ** 2).sum())
+            if norm <= np.finfo(type(norm)).eps * x.max() * x.shape[0]:
+                continue
+            vec = vec / norm
+            weights = np.matmul(vec.T, y_basis)
+            proj = np.matmul(y_basis, weights.T)
+            remain = vec - proj
+            norm = np.sqrt((remain ** 2).sum())
+            if norm >= epsilon:
+                x_cols.append(i)
 
-# Define what device we are using
-print("CUDA Available: ",torch.cuda.is_available())
-device = torch.device("cuda" if (use_cuda and torch.cuda.is_available()) else "cpu")
+        x_basis = linalg.orth(x)
+        y_cols = []
+        for j in range(y.shape[1]):
+            vec = y[:, j:j+1]
+            norm = np.sqrt((vec ** 2).sum())
+            if norm <= np.finfo(type(norm)).eps * y.max() * y.shape[0]:
+                continue
+            vec = vec / norm
+            weights = np.matmul(vec.T, x_basis)
+            proj = np.matmul(x_basis, weights.T)
+            remain = vec - proj
+            norm = np.sqrt((remain ** 2).sum())
+            if norm >= epsilon:
+                y_cols.append(j)
 
-# Initialize the network
-model = torch.nn.DataParallel(Net()).to(device)
-model2 = torch.nn.DataParallel(Net()).to(device)
-
-# Load the pretrained model
-model.load_state_dict(torch.load(pretrained_model, map_location='cpu')['state_dict'])
-model2.load_state_dict(torch.load(pretrained_model2, map_location='cpu')['state_dict'])
-
-# Set the model in evaluation mode. In this case this is for the Dropout layers
-model.eval()
-model2.eval()
-
-def test(model, model2, device, test_loader):
-    X, Y = [], []
-    i = 0
-
-    # Loop over all examples in test set
-    for data, target in test_loader:
-        # Send the data and label to the device
-        data, target = data.to(device), target.to(device)
-
-        # Forward pass the data through the model
-        middle, output = model(data)
-        X.append(middle[len(middle) // 2].detach())
-
-        # Re-classify the perturbed image
-        middle2, output2 = model2(data)
-        Y.append(middle2[len(middle2) // 2].detach())
-
-        i += 1
-        if i > 1000:
+        x = np.delete(x, x_cols, axis=1)
+        y = np.delete(y, y_cols, axis=1)
+        if not x_cols and not y_cols:
             break
 
-    X = [x.view(-1) for x in X]
-    Y = [y.view(-1) for y in Y]
-    i = 0
-    for x, y in zip(X, Y):
-        if i >= plot_examples:
-            break
-        i += 1
-        x = list(x.numpy())
-        y = list(y.numpy())
-        x = sorted(x)
-        y = sorted(y)
-        plt.plot(x)
-        plt.plot(y)
+    return (x.shape[1] + y.shape[1]) / nr_cols
+
+# https://arxiv.org/abs/1905.00414
+# Linear CKA
+def calc_similarity2(x, y):
+    a = torch.matmul(y.t(), x)
+    b = torch.matmul(x.t(), x)
+    c = torch.matmul(y.t(), y)
+    a = (a ** 2).sum()
+    b = (b ** 2).sum().sqrt()
+    c = (c ** 2).sum().sqrt()
+    z = (a / (b * c)).item()
+    return z
+
+def main():
+    X, Y = torch.load(data_filename)
+
+    X_sum = [x.sum(dim=0) for x in X]
+    Y_sum = [y.sum(dim=0) for y in Y]
+    for x, y in zip(X_sum, Y_sum):
+        plt.plot(sorted(list(x.numpy())))
+        plt.plot(sorted(list(y.numpy())))
         plt.show()
 
-    X = torch.stack(X)
-    Y = torch.stack(Y)
+    for x, y in zip(X, Y):
+        print(f"x.shape = {x.shape}, y.shape = {y.shape}")
+        sim1 = calc_similarity1(x, y, 0.5)
+        sim2 = calc_similarity2(x, y)
+        print(f"Similarity1: {sim1}\tSimilarity2: {sim2}")
+        print('')
 
-    Z = torch.matmul(Y.t(), X)
-    X = torch.matmul(X.t(), X)
-    Y = torch.matmul(Y.t(), Y)
-    z = (Z ** 2).sum()
-    x = (X ** 2).sum().sqrt()
-    y = (Y ** 2).sum().sqrt()
-    print('Similarity: {}'.format((z / (x * y)).item()))
-
-test(model, model2, device, test_loader)
+if __name__ == "__main__":
+    main()
